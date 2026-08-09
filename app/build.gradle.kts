@@ -50,4 +50,9 @@ dependencies {
     // Librería para conectarnos al servidor en internet
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.compose.material3:material3")
+
+    // Notificaciones en tiempo real (websocket)
+    implementation(libs.socket.io.client) {
+        exclude(group = "org.json", module = "json")
+    }
 }
