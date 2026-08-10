@@ -379,8 +379,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Sin scroll: todos los tickets se reparten en columnas que llenan el alto
-    // disponible, ordenados por prioridad (más urgente primero).
+    // Sin scroll manual (no tiene sentido con un control remoto): en vez de
+    // apachurrar todos los tickets en la pantalla —lo que los volvía
+    // ilegibles cuando había muchos—, se reparten en páginas de tamaño fijo
+    // que rotan solas cada pocos segundos, ordenados por prioridad.
     private fun prioridadRango(prioridad: String) = when (prioridad.lowercase()) {
         "critica", "crítica" -> 0
         "alta" -> 1
@@ -388,38 +390,106 @@ class MainActivity : ComponentActivity() {
         else -> 3
     }
 
+    companion object {
+        private const val COLUMNAS = 3
+        private const val FILAS_POR_PAGINA = 4
+        private const val TICKETS_POR_PAGINA = COLUMNAS * FILAS_POR_PAGINA
+        private const val ROTACION_PAGINA_MS = 8_000L
+    }
+
     @OptIn(ExperimentalTvMaterial3Api::class)
     @Composable
     fun DashboardUI(tickets: List<Ticket>) {
         val ordenados = tickets.sortedBy { prioridadRango(it.prioridad) }
-        val columnas = 3
-        val porColumna = List(columnas) { col -> ordenados.filterIndexed { i, _ -> i % columnas == col } }
+        val paginas = remember(ordenados) { ordenados.chunked(TICKETS_POR_PAGINA) }
+        var paginaActual by remember { mutableStateOf(0) }
 
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 32.dp, vertical = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            porColumna.forEach { ticketsColumna ->
-                Column(
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    ticketsColumna.forEach { ticket ->
-                        TicketRow(ticket = ticket, modifier = Modifier.weight(1f).fillMaxWidth())
+        // Si la lista cambia (nuevo ticket, resuelto, etc.) y la página actual
+        // ya no existe, regresamos a la primera en vez de mostrar una vacía.
+        LaunchedEffect(paginas.size) {
+            if (paginaActual >= paginas.size) paginaActual = 0
+        }
+
+        // Auto-rotación: solo si hay más de una página que mostrar.
+        LaunchedEffect(paginas.size) {
+            if (paginas.size <= 1) return@LaunchedEffect
+            while (isActive) {
+                delay(ROTACION_PAGINA_MS)
+                paginaActual = (paginaActual + 1) % paginas.size
+            }
+        }
+
+        val ticketsPagina = paginas.getOrElse(paginaActual) { emptyList() }
+        val porColumna = List(COLUMNAS) { col -> ticketsPagina.filterIndexed { i, _ -> i % COLUMNAS == col } }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp, vertical = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                porColumna.forEach { ticketsColumna ->
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        repeat(FILAS_POR_PAGINA) { fila ->
+                            val ticket = ticketsColumna.getOrNull(fila)
+                            if (ticket != null) {
+                                TicketRow(ticket = ticket, modifier = Modifier.weight(1f).fillMaxWidth())
+                            } else {
+                                Spacer(modifier = Modifier.weight(1f).fillMaxWidth())
+                            }
+                        }
                     }
                 }
             }
+
+            if (paginas.size > 1) {
+                PaginaIndicador(total = paginas.size, actual = paginaActual)
+            }
         }
+    }
+
+    @Composable
+    fun PaginaIndicador(total: Int, actual: Int) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 20.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            repeat(total) { i ->
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 5.dp)
+                        .size(if (i == actual) 10.dp else 8.dp)
+                        .clip(CircleShape)
+                        .background(if (i == actual) BrandTeal else Color(0xFFCBD5E0))
+                )
+            }
+        }
+    }
+
+    // Urgencia real de un ticket: critica pulsa (necesita atención YA),
+    // alta es roja fija, media naranja, baja/sin definir azul — mismo mapeo
+    // de colores que las badges de prioridad de la web (TicketList.css).
+    private fun urgenciaColor(prioridad: String): Color = when (prioridad.lowercase()) {
+        "critica", "crítica" -> BadgeRedText
+        "alta" -> BadgeRedText
+        "media" -> BadgeOrangeText
+        else -> BadgeBlueText
     }
 
     @OptIn(ExperimentalTvMaterial3Api::class)
     @Composable
     fun TicketRow(ticket: Ticket, modifier: Modifier = Modifier) {
         // Mismos colores de badge que la tabla de tickets de la web (TicketList.css)
+        val esCritica = ticket.prioridad.lowercase().contains("critica") || ticket.prioridad.lowercase().contains("crítica")
         val (prioridadBg, prioridadText) = when {
-            ticket.prioridad.lowercase().contains("critica") || ticket.prioridad.lowercase() == "alta" -> BadgeRedBg to BadgeRedText
+            esCritica || ticket.prioridad.lowercase() == "alta" -> BadgeRedBg to BadgeRedText
             ticket.prioridad.lowercase() == "media" -> BadgeOrangeBg to BadgeOrangeText
             else -> BadgeBlueBg to BadgeBlueText
         }
@@ -428,13 +498,24 @@ class MainActivity : ComponentActivity() {
             "pendiente" -> BadgeBlueBg to BadgeBlueText
             else -> BadgeGrayBg to BadgeGrayText
         }
+        val colorUrgencia = urgenciaColor(ticket.prioridad)
+
+        // Las tarjetas críticas laten sutilmente para saltar a la vista desde
+        // el otro lado de la sala, sin depender de leer el texto de la badge.
+        val infiniteTransition = rememberInfiniteTransition(label = "urgencia")
+        val pulso by infiniteTransition.animateFloat(
+            initialValue = 0.5f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(animation = tween(700), repeatMode = RepeatMode.Reverse),
+            label = "pulso"
+        )
 
         Surface(
             modifier = modifier.shadow(2.dp, RoundedCornerShape(10.dp), clip = false),
             onClick = { /* Acción al presionar */ },
             shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(10.dp)),
             colors = ClickableSurfaceDefaults.colors(
-                containerColor = Color.White,
+                containerColor = if (esCritica) Color(0xFFFFF3F3) else Color.White,
                 contentColor = BrandNavy,
                 focusedContainerColor = Color(0xFFF8FAFC),
                 focusedContentColor = BrandNavy
@@ -447,11 +528,20 @@ class MainActivity : ComponentActivity() {
                 )
             )
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-            ) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Barra de acento: el color de urgencia se ve de un vistazo
+                // sin tener que leer la badge.
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(6.dp)
+                        .background(colorUrgencia.copy(alpha = if (esCritica) pulso else 1f))
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     androidx.compose.material3.Text(
                         text = "#${ticket.id}",
@@ -482,6 +572,7 @@ class MainActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Badge(text = ticket.prioridad, background = prioridadBg, textColor = prioridadText)
                     Badge(text = ticket.estado, background = estadoBg, textColor = estadoText)
+                }
                 }
             }
         }
