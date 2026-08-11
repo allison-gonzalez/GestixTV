@@ -16,8 +16,8 @@ data class LoginResult(
 
 object ApiService {
 
-    private const val BASE_URL = "https://backend-movil-4x6m.onrender.com/api"
-    const val SOCKET_URL = "https://backend-movil-4x6m.onrender.com"
+    private const val BASE_URL = "https://gestix-backend-express.onrender.com/api"
+    const val SOCKET_URL = "https://gestix-backend-express.onrender.com"
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
